@@ -3,7 +3,7 @@ import time
 import argparse
 import math
 from numpy import finfo
-
+import matplotlib.pyplot as plt
 import torch
 from distributed import apply_gradient_allreduce
 import torch.distributed as dist
@@ -50,7 +50,7 @@ def prepare_dataloaders(hparams):
         shuffle = False
     else:
         train_sampler = None
-        shuffle = True
+        shuffle = False
 
     train_loader = DataLoader(trainset, num_workers=1, shuffle=shuffle,
                               sampler=train_sampler,
@@ -132,6 +132,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         for i, batch in enumerate(val_loader):
             x, y = model.parse_batch(batch)
             y_pred = model(x)
+
             loss = criterion(y_pred, y)
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
@@ -139,12 +140,11 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 reduced_val_loss = loss.item()
             val_loss += reduced_val_loss
         val_loss = val_loss / (i + 1)
-
     model.train()
     if rank == 0:
         print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
         logger.log_validation(val_loss, model, y, y_pred, iteration)
-
+    return y_pred[0][0].cpu().numpy(), y_pred[-1][0].cpu().numpy()
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
           rank, group_name, hparams):
@@ -204,6 +204,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     is_overflow = False
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, hparams.epochs):
+        mel_pred = None
+        pred_align = None
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
             start = time.perf_counter()
@@ -237,23 +239,28 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start
-                print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
+                print("Train loss {} {:.6f}".format(
                     iteration, reduced_loss, grad_norm, duration))
                 logger.log_training(
                     reduced_loss, grad_norm, learning_rate, duration, iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
-                validate(model, criterion, valset, iteration,
-                         hparams.batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank)
-                if rank == 0:
-                    checkpoint_path = os.path.join(
-                        output_directory, "checkpoint_{}".format(iteration))
-                    save_checkpoint(model, optimizer, learning_rate, iteration,
-                                    checkpoint_path)
+                mel_pred, pred_align = validate(model, criterion, valset, iteration,
+                                             hparams.batch_size, n_gpus, collate_fn, logger,
+                                             hparams.distributed_run, rank)
 
             iteration += 1
 
+
+        if not os.path.exists('alignment_plots'):
+            os.mkdir('alignment_plots')
+            os.mkdir('predicetd_mel')
+        if pred_align is not None and mel_pred is not None:
+            plt.imshow(pred_align.T)
+            plt.savefig(f'alignment_plots/{epoch}.png')
+            plt.clf()
+            plt.imshow(mel_pred)
+            plt.savefig(f'predicetd_mel/{epoch}.png')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -285,6 +292,17 @@ if __name__ == '__main__':
     print("Distributed Run:", hparams.distributed_run)
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
-
+    import os
+    folder = 'wav_batch'
+    wav_files = [wavname for wavname in os.listdir(folder) if wavname[-4:] == '.wav']
+    wav_file_stems = set([wavname[:-4] for wavname in wav_files])
+    csv = os.path.join(folder, 'metadata.csv')
+    with open(csv, 'r') as f:
+        data = f.read()
+    data = {os.path.join(folder, line.split('|')[0]+'.wav'):line.split('|')[1] for line in data.split('\n')[:-1] if line.split('|')[0] in wav_file_stems}
+    if not os.path.exists('filelists/batch.txt'):
+        for key in data:
+            with open('filelists/batch.txt', 'a') as f:
+                f.write(key+'|'+data[key]+'\n')
     train(args.output_directory, args.log_directory, args.checkpoint_path,
           args.warm_start, args.n_gpus, args.rank, args.group_name, hparams)
