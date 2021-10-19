@@ -256,10 +256,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             os.mkdir('alignment_plots')
             os.mkdir('predicetd_mel')
         if pred_align is not None and mel_pred is not None:
-            plt.imshow(pred_align.T)
+            plt.imshow(pred_align.T, cmap='viridis')
             plt.savefig(f'alignment_plots/{epoch}.png')
             plt.clf()
-            plt.imshow(mel_pred)
+            plt.imshow(mel_pred, cmap='viridis')
             plt.savefig(f'predicetd_mel/{epoch}.png')
 
 if __name__ == '__main__':
