@@ -91,6 +91,8 @@ def create_hparams(hparams_string=None, verbose=False):
 
     # if verbose:
     #     tf.logging.info('Final parsed hparams: %s', hparams.values())
-    from attrdict import AttrDict
-    hparams = AttrDict(hparams)
+    # from attrdict import AttrDict
+    # hparams = AttrDict(hparams)
+    from easydict import EasyDict as edict
+    hparams = edict(hparams)
     return hparams
